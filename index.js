@@ -1,121 +1,138 @@
-const express = require('express');
-const cors = require('cors')
-const bodyParser = require('body-parser');
-const axios = require('axios');
-const https = require('https')
-const fs = require('fs');
-const algosdk = require('algosdk');
-require('dotenv').config()
+const express = require("express");
+const cors = require("cors");
+const bodyParser = require("body-parser");
+const axios = require("axios");
+const https = require("https");
+const fs = require("fs");
+const algosdk = require("algosdk");
+require("dotenv").config();
 
-const { MN, RECAPTCHA_SITE_KEY, RECAPTCHA_SECRET_KEY, ALGO_SERVER, ALGO_INDEXER_SERVER, ALLOWED_ROUNDS } = process.env;
+const {
+  MN,
+  RECAPTCHA_SITE_KEY,
+  RECAPTCHA_SECRET_KEY,
+  ALGO_SERVER,
+  ALGO_INDEXER_SERVER,
+  ALLOWED_ROUNDS,
+} = process.env;
 
 const algodClient = new algosdk.Algodv2(
-process.env.ALGOD_TOKEN || "",
-process.env.ALGOD_SERVER || ALGO_SERVER,
-process.env.ALGOD_PORT || ""
+  process.env.ALGOD_TOKEN || "",
+  process.env.ALGOD_SERVER || ALGO_SERVER,
+  process.env.ALGOD_PORT || ""
 );
 
 const indexerClient = new algosdk.Indexer(
-process.env.INDEXER_TOKEN || "",
-process.env.INDEXER_SERVER || ALGO_INDEXER_SERVER,
-process.env.INDEXER_PORT || ""
+  process.env.INDEXER_TOKEN || "",
+  process.env.INDEXER_SERVER || ALGO_INDEXER_SERVER,
+  process.env.INDEXER_PORT || ""
 );
 
 const signSendAndConfirm = async (txns, sk) => {
-const stxns = txns
-.map((t) => new Uint8Array(Buffer.from(t, "base64")))
-.map(algosdk.decodeUnsignedTransaction)
-.map((t) => algosdk.signTransaction(t, sk));
-await algodClient.sendRawTransaction(stxns.map(({ blob }) => blob)).do();
-await Promise.all(
-stxns.map(({ txID }) => algosdk.waitForConfirmation(algodClient, txID, 4))
-);
-return stxns.map(({ txID }) => txID);
+  const stxns = txns
+    .map((t) => new Uint8Array(Buffer.from(t, "base64")))
+    .map(algosdk.decodeUnsignedTransaction)
+    .map((t) => algosdk.signTransaction(t, sk));
+  await algodClient.sendRawTransaction(stxns.map(({ blob }) => blob)).do();
+  await Promise.all(
+    stxns.map(({ txID }) => algosdk.waitForConfirmation(algodClient, txID, 4))
+  );
+  return stxns.map(({ txID }) => txID);
 };
 
 const app = express();
 const port = 3000;
 
-app.use(cors())
-app.use(bodyParser.urlencoded({ extended: true }))
+app.use(cors());
+app.use(bodyParser.urlencoded({ extended: true }));
 
-app.post('/submit-form', async (req, res) => {
+app.post("/submit-form", async (req, res) => {
   const { recaptcha: token, target } = req.body;
 
   if (!token) {
-    return res.status(400).json({ message: 'reCAPTCHA token is missing' });
+    return res.status(400).json({ message: "reCAPTCHA token is missing" });
   }
 
   if (!target) {
-    return res.status(400).json({ message: 'address is missing' });
+    return res.status(400).json({ message: "address is missing" });
   }
 
-  const ADDRESS_REGEX = /[A-Z0-9]{58}/
+  const ADDRESS_REGEX = /[A-Z0-9]{58}/;
 
   if (!ADDRESS_REGEX.test(target)) {
-     return res.status(400).json({ message: 'address is invalid' });
+    return res.status(400).json({ message: "address is invalid" });
   }
 
-
   try {
-    const response = await axios.post(`https://www.google.com/recaptcha/api/siteverify`, null, {
-      params: {
-        secret: RECAPTCHA_SECRET_KEY,
-        response: token
+    const response = await axios.post(
+      `https://www.google.com/recaptcha/api/siteverify`,
+      null,
+      {
+        params: {
+          secret: RECAPTCHA_SECRET_KEY,
+          response: token,
+        },
       }
-    });
+    );
 
     const { success, score } = response.data;
 
-    if (!success || score < 0.5) {  // Adjust the score threshold as needed
-      return res.status(400).json({ message: 'reCAPTCHA verification failed' });
+    if (!success || score < 0.5) {
+      // Adjust the score threshold as needed
+      return res.status(400).json({ message: "reCAPTCHA verification failed" });
     }
 
     // Begin
 
     const { addr, sk } = algosdk.mnemonicToSecretKey(MN);
 
-
     const status = await algodClient.status().do();
-    const lastRound = status['last-round'];
+    const lastRound = status["last-round"];
     const allowedRounds = Number(ALLOWED_ROUNDS);
 
     const { CONTRACT, abi } = await import("ulujs");
 
     const VIA = 6779767;
     const dripAmount = 1000 * 1e6;
-	  
+
     const ci = new CONTRACT(VIA, algodClient, indexerClient, abi.arc200, {
-	addr,
-	sk: new Uint8Array(0)
-    })
+      addr,
+      sk: new Uint8Array(0),
+    });
 
-    const transferEvents = (await ci.arc200_Transfer({minRound: lastRound - allowedRounds, address: addr, sender: addr }))
-	  .filter(el => el[4] === target);
+    const transferEvents = (
+      await ci.arc200_Transfer({
+        minRound: lastRound - allowedRounds,
+        address: addr,
+        sender: addr,
+      })
+    ).filter((el) => el[4] === target);
 
-    if(transferEvents.length > 0) {
-	return res.status(400).json({ message: 'faucet usage limited exceeded (1 per hour)' });
+    if (transferEvents.length > 0) {
+      return res
+        .status(400)
+        .json({ message: "faucet usage limited exceeded (1 per hour)" });
     }
 
     const arc200_transferR = await ci.arc200_transfer(target, dripAmount);
     let txID;
-    if(arc200_transferR.success) {
+    if (arc200_transferR.success) {
       const res = await signSendAndConfirm(arc200_transferR.txns, sk);
       txID = res.pop();
     } else {
-	ci.setPaymentAmount(28500);
-    	const arc200_transferR = await ci.arc200_transfer(target, 10 * 1e6);
-	if(!arc200_transferR.success) throw new Error("simulation failed");
-      	const res = await signSendAndConfirm(arc200_transferR.txns, sk);
-	txID = res.slice(-1).pop();    
+      ci.setPaymentAmount(28500);
+      const arc200_transferR = await ci.arc200_transfer(target, 10 * 1e6);
+      if (!arc200_transferR.success) throw new Error("simulation failed");
+      const res = await signSendAndConfirm(arc200_transferR.txns, sk);
+      txID = res.slice(-1).pop();
     }
 
-
-    return res.status(200).json({ message: 'Form submitted successfully', txID });
-
+    return res
+      .status(200)
+      .json({ message: "Form submitted successfully", txID });
   } catch (error) {
-    console.error('reCAPTCHA verification error:', error);
-    return res.status(500).json({ message: 'Internal server error' });
+    console.error("reCAPTCHA verification error:", error);
+    return res.status(500).json({ message: "Internal server error" });
   }
 });
 
