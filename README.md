@@ -1,4 +1,11 @@
 # Voi Dispenser Backend
 
-- Dispense VIA to users
-  - 1000 VIA per ~1 hour
+Backend api for <https://faucet.nautilus.sh>
+
+**Features**
+
+- Dispense VIA to user after completing CAPTCHA
+
+**Additional resources**
+
+- [NautilusOSS/faucet.nautilus.sh](https://github.com/NautilusOSS/faucet.nautilus.sh)
