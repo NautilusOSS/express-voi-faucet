@@ -16,6 +16,36 @@ const {
   ALLOWED_ROUNDS,
 } = process.env;
 
+// -----------------------------------------------
+// quest
+// -----------------------------------------------
+const QUEST_API = "https://quest.nautilus.sh";
+const QUEST_ACTION = {
+  FAUCET_DRIP: "faucet_drip_once"
+}
+const submitAction = (action, address, params = {}) => {
+  return axios.post(
+    `${QUEST_API}/quest`,
+    {
+      action,
+      data: {
+        wallets: [
+          {
+            address,
+          },
+        ],
+        ...params,
+      },
+    },
+    {
+      headers: {
+        "Content-Type": "application/json",
+      },
+    }
+  );
+};
+// -----------------------------------------------
+
 const algodClient = new algosdk.Algodv2(
   process.env.ALGOD_TOKEN || "",
   process.env.ALGOD_SERVER || ALGO_SERVER,
@@ -114,22 +144,39 @@ app.post("/submit-form", async (req, res) => {
         .json({ message: "faucet usage limited exceeded (1 per hour)" });
     }
 
+    // get account info
+    //   if zero balance transfer 1
+    const accountInfo = await algodClient.accountInformation(target).do();
+    if(accountInfo.amount === 0) {
+	    const suggestedParams = await algodClient.getTransactionParams().do();
+	    const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+		amount: 10 * 1e6,
+		from: addr,
+		to: target,
+		suggestedParams
+	    })
+	    await algodClient
+  		.sendRawTransaction(txn.signTxn(sk))
+  		.do();
+    }
+
     const arc200_transferR = await ci.arc200_transfer(target, dripAmount);
     let txID;
     if (arc200_transferR.success) {
       const res = await signSendAndConfirm(arc200_transferR.txns, sk);
       txID = res.pop();
     } else {
-      ci.setPaymentAmount(28500);
-      const arc200_transferR = await ci.arc200_transfer(target, 10 * 1e6);
-      if (!arc200_transferR.success) throw new Error("simulation failed");
-      const res = await signSendAndConfirm(arc200_transferR.txns, sk);
-      txID = res.slice(-1).pop();
+	ci.setPaymentAmount(28500);
+    	const arc200_transferR = await ci.arc200_transfer(target, dripAmount);
+	if(!arc200_transferR.success) throw new Error("simulation failed");
+      	const res = await signSendAndConfirm(arc200_transferR.txns, sk);
+	txID = res.slice(-1).pop();    
     }
 
-    return res
-      .status(200)
-      .json({ message: "Form submitted successfully", txID });
+    await submitAction(QUEST_ACTION.FAUCET_DRIP, target, { contractId: VIA });
+
+    return res.status(200).json({ message: 'Form submitted successfully', txID });
+
   } catch (error) {
     console.error("reCAPTCHA verification error:", error);
     return res.status(500).json({ message: "Internal server error" });
